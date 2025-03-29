@@ -704,4 +704,4 @@
         
         ;; Return remaining collateral to option creator
         (if (> remaining-collateral u0)
-          
+        )
