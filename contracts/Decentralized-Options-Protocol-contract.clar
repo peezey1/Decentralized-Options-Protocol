@@ -662,3 +662,46 @@
     )
   )
 )
+;; Liquidate an undercollateralized option
+(define-public (liquidate-option (option-id uint))
+  (let (
+    (liquidator tx-sender)
+    (option (unwrap! (map-get? options { option-id: option-id }) err-option-not-found))
+    (underlying-asset (get underlying-asset option))
+    (asset (unwrap! (map-get? assets { asset-id: underlying-asset }) err-asset-not-found))
+    (asset-price (unwrap! (get current-price (map-get? price-data { asset-id: underlying-asset })) err-oracle-error))
+  )
+    ;; Validation
+    (asserts! (not (var-get emergency-shutdown)) err-emergency-shutdown)
+    (asserts! (< block-height (get expiry-height option)) err-option-expired)
+    (asserts! (not (get is-exercised option)) err-already-exercised)
+    (asserts! (not (get is-liquidated option)) err-option-not-liquidatable)
+    
+    ;; Check if option is undercollateralized
+    (let (
+      (is-call (is-eq (get option-type option) u0))
+      (maintenance-ratio (var-get maintenance-margin-ratio))
+      (current-collateral-ratio (calculate-collateral-ratio option asset-price))
+    )
+      ;; Check if ratio is below maintenance margin
+      (asserts! (< current-collateral-ratio maintenance-ratio) err-option-not-liquidatable)
+      
+      ;; Get holder position if it exists
+      (let (
+        (holder (get holder option))
+        (collateral-amount (get collateral-amount option))
+        (liquidation-penalty (/ (* collateral-amount (var-get liquidation-penalty)) u10000))
+        (remaining-collateral (- collateral-amount liquidation-penalty))
+        (collateral-token (get collateral-token option))
+      )
+        ;; Pay liquidation penalty to liquidator
+        (if (is-eq collateral-token "stx")
+          ;; STX payment
+          (as-contract (try! (stx-transfer? liquidation-penalty (as-contract tx-sender) liquidator)))
+          ;; Other token payment
+          (as-contract (try! (transfer-token collateral-token liquidation-penalty (as-contract tx-sender) liquidator)))
+        )
+        
+        ;; Return remaining collateral to option creator
+        (if (> remaining-collateral u0)
+          
