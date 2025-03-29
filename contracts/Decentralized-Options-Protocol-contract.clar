@@ -1,15 +1,32 @@
+;; Decentralized Options Protocol
+;; An options trading platform built entirely on Clarity
 
-;; Decentralized-Options-Protocol-contract
-;; <add a description here>
-
-;; constants
-;;
-
-;; data maps and vars
-;;
-
-;; private functions
-;;
-
-;; public functions
-;;
+(define-constant contract-owner tx-sender)
+(define-constant err-owner-only (err u100))
+(define-constant err-not-authorized (err u101))
+(define-constant err-asset-exists (err u102))
+(define-constant err-asset-not-found (err u103))
+(define-constant err-option-not-found (err u104))
+(define-constant err-insufficient-funds (err u105))
+(define-constant err-insufficient-collateral (err u106))
+(define-constant err-invalid-parameters (err u107))
+(define-constant err-option-expired (err u108))
+(define-constant err-option-not-expired (err u109))
+(define-constant err-option-not-exercisable (err u110))
+(define-constant err-option-already-settled (err u111))
+(define-constant err-option-not-liquidatable (err u112))
+(define-constant err-already-exercised (err u113))
+(define-constant err-oracle-error (err u114))
+(define-constant err-price-too-old (err u115))
+(define-constant err-min-collateral (err u116))
+(define-constant err-invalid-expiry (err u117))
+(define-constant err-invalid-option-type (err u118))
+(define-constant err-invalid-option-style (err u119))
+(define-constant err-option-in-grace-period (err u120))
+(define-constant err-option-not-in-grace-period (err u121))
+(define-constant err-position-not-found (err u122))
+(define-constant err-invalid-position-state (err u123))
+(define-constant err-emergency-shutdown (err u124))
+(define-constant err-maintenance-margin-too-low (err u125))
+(define-constant err-premium-too-small (err u126))
+(define-constant err-unsupported-calculation (err u127))
