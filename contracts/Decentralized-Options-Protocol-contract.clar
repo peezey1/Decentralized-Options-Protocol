@@ -616,3 +616,49 @@
     )
   )
 )
+
+;; Calculate settlement amount for an option
+(define-private (calculate-settlement-amount
+  (option (tuple 
+    creator: principal, 
+    underlying-asset: (string-ascii 20), 
+    strike-price: uint, 
+    expiry-height: uint, 
+    option-type: uint, 
+    option-style: uint, 
+    collateral-amount: uint, 
+    premium: uint, 
+    contract-size: uint, 
+    creation-height: uint, 
+    settlement-price: (optional uint), 
+    is-settled: bool, 
+    settlement-height: (optional uint), 
+    collateral-token: (string-ascii 20), 
+    holder: (optional principal), 
+    is-exercised: bool, 
+    exercise-height: (optional uint), 
+    is-liquidated: bool, 
+    liquidation-height: (optional uint), 
+    iv-at-creation: uint, 
+    premium-calculation-method: (string-ascii 10)))
+  (asset-price uint))
+  
+  (let (
+    (is-call (is-eq (get option-type option) u0))
+    (strike-price (get strike-price option))
+    (contract-size (get contract-size option))
+  )
+    (if is-call
+      ;; Call option settlement
+      (if (> asset-price strike-price)
+        (min (get collateral-amount option) (* contract-size (/ (- asset-price strike-price) strike-price)))
+        u0
+      )
+      ;; Put option settlement
+      (if (< asset-price strike-price)
+        (min (get collateral-amount option) (* contract-size (/ (- strike-price asset-price) strike-price)))
+        u0
+      )
+    )
+  )
+)
