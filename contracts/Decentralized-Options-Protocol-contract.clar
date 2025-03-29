@@ -30,3 +30,62 @@
 (define-constant err-maintenance-margin-too-low (err u125))
 (define-constant err-premium-too-small (err u126))
 (define-constant err-unsupported-calculation (err u127))
+
+;; Option types enumeration
+;; 0 = Call, 1 = Put
+(define-data-var option-types (list 2 (string-ascii 4)) (list "Call" "Put"))
+
+;; Option styles enumeration
+;; 0 = American, 1 = European
+(define-data-var option-styles (list 2 (string-ascii 9)) (list "American" "European"))
+
+;; Position states enumeration
+;; 0 = Active, 1 = Exercised, 2 = Expired, 3 = Liquidated
+(define-data-var position-states (list 4 (string-ascii 10)) (list "Active" "Exercised" "Expired" "Liquidated"))
+
+;; Supported underlying assets
+(define-map assets
+  { asset-id: (string-ascii 20) }
+  {
+    name: (string-ascii 40),
+    price-oracle: principal,
+    token-contract: principal,
+    decimals: uint,
+    historical-volatility: uint, ;; Annualized volatility in basis points
+    volatility-history: (list 30 uint), ;; Last 30 days of volatility data
+    is-stx: bool, ;; STX is handled specially
+    minimum-increment: uint, ;; Smallest tradable amount
+    last-price: uint, ;; Latest price in STX with 8 decimals
+    last-price-update: uint, ;; Block height of last price update
+    risk-factor: uint, ;; Risk factor 1-100
+    enabled: bool
+  }
+)
+
+;; Options contracts
+(define-map options
+  { option-id: uint }
+  {
+    creator: principal,
+    underlying-asset: (string-ascii 20),
+    strike-price: uint, ;; In STX with 8 decimals
+    expiry-height: uint,
+    option-type: uint, ;; 0=Call, 1=Put
+    option-style: uint, ;; 0=American, 1=European
+    collateral-amount: uint,
+    premium: uint, ;; In STX
+    contract-size: uint, ;; Number of units of underlying
+    creation-height: uint,
+    settlement-price: (optional uint),
+    is-settled: bool,
+    settlement-height: (optional uint),
+    collateral-token: (string-ascii 20), ;; Token used for collateral
+    holder: (optional principal),
+    is-exercised: bool,
+    exercise-height: (optional uint),
+    is-liquidated: bool,
+    liquidation-height: (optional uint),
+    iv-at-creation: uint, ;; Implied volatility at creation in basis points
+    premium-calculation-method: (string-ascii 10) ;; "black-scholes" or "custom"
+  }
+)
