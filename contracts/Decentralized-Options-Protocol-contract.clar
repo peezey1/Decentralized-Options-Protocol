@@ -254,3 +254,365 @@
         }
       )
       
+ ;; Update asset's last price
+      (map-set assets
+        { asset-id: asset-id }
+        (merge asset {
+          last-price: price,
+          last-price-update: block-height
+        })
+      )
+      
+      ;; Check for options that need liquidation
+      (check-liquidations asset-id price)
+      
+      (ok { asset: asset-id, price: price, twap: twap })
+    )
+  )
+)
+
+;; Helper to add price to history
+(define-private (add-price-to-history 
+  (history (list 30 { price: uint, height: uint }))
+  (new-price uint))
+  
+  (append (buff-to-list (list-to-buff history) u1 u29)
+          { price: new-price, height: block-height })
+)
+
+;; Helper to calculate TWAP (Time-Weighted Average Price)
+(define-private (calculate-twap 
+  (history (list 30 { price: uint, height: uint })))
+  
+  (let (
+    (history-length (len history))
+    (sum (fold sum-price u0 history))
+  )
+    (if (> history-length u0)
+      (/ sum history-length)
+      u0
+    )
+  )
+)
+
+;; Helper to sum prices for TWAP
+(define-private (sum-price 
+  (total uint) 
+  (entry { price: uint, height: uint }))
+  
+  (+ total (get price entry))
+)
+
+;; Check options for liquidation
+(define-private (check-liquidations 
+  (asset-id (string-ascii 20))
+  (price uint))
+  
+  ;; In a full implementation, this would scan all options for under-collateralized positions
+  ;; For simplicity, we'll assume this is handled differently or through callbacks
+  (ok true)
+)
+
+;; Update volatility for an asset
+(define-public (update-volatility (asset-id (string-ascii 20)) (volatility-bp uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (not (var-get emergency-shutdown)) err-emergency-shutdown)
+    (asserts! (<= volatility-bp u10000) err-invalid-parameters) ;; Max 100% volatility
+    
+    (let (
+      (asset (unwrap! (map-get? assets { asset-id: asset-id }) err-asset-not-found))
+      (old-history (get volatility-history asset))
+    )
+      ;; Update asset volatility
+      (map-set assets
+        { asset-id: asset-id }
+        (merge asset {
+          historical-volatility: volatility-bp,
+          volatility-history: (append (buff-to-list (list-to-buff old-history) u1 u29) volatility-bp)
+        })
+      )
+      
+      (ok { asset: asset-id, volatility: volatility-bp })
+    )
+  )
+)
+
+;; Create a new option contract
+(define-public (create-option
+  (underlying-asset (string-ascii 20))
+  (strike-price uint)
+  (expiry-height uint)
+  (option-type uint)
+  (option-style uint)
+  (contract-size uint)
+  (premium uint)
+  (collateral-token (string-ascii 20)))
+  
+  (let (
+    (writer tx-sender)
+    (option-id (var-get next-option-id))
+    (asset (unwrap! (map-get? assets { asset-id: underlying-asset }) err-asset-not-found))
+    (asset-price (unwrap! (get current-price (map-get? price-data { asset-id: underlying-asset })) err-oracle-error))
+    (current-height block-height)
+    (expiry-blocks (- expiry-height current-height))
+  )
+    ;; Validation
+    (asserts! (not (var-get emergency-shutdown)) err-emergency-shutdown)
+    (asserts! (get enabled asset) err-asset-not-found)
+    (asserts! (< option-type u2) err-invalid-option-type) ;; 0=Call, 1=Put
+    (asserts! (< option-style u2) err-invalid-option-style) ;; 0=American, 1=European
+    (asserts! (>= expiry-blocks (var-get min-expiry-period)) err-invalid-expiry)
+    (asserts! (<= expiry-blocks (var-get max-expiry-period)) err-invalid-expiry)
+    (asserts! (>= premium (var-get min-premium)) err-premium-too-small)
+    (asserts! (> contract-size u0) err-invalid-parameters)
+    (asserts! (> strike-price u0) err-invalid-parameters)
+    
+    ;; Validate latest price is fresh enough
+    (asserts! (< (- current-height (get last-price-update asset)) (var-get price-validity-period)) err-price-too-old)
+    
+    ;; Calculate required collateral
+    (let (
+      (collateral-amount (calculate-required-collateral option-type underlying-asset strike-price contract-size))
+      (iv (get historical-volatility asset))
+    )
+      ;; Ensure minimum collateral
+      (asserts! (>= collateral-amount (/ (* contract-size u1) u100)) err-min-collateral)
+      
+      ;; Transfer collateral from writer
+      (if (is-eq collateral-token "stx")
+        ;; STX collateral
+        (try! (stx-transfer? collateral-amount writer (as-contract tx-sender)))
+        ;; Other token as collateral
+        (try! (transfer-token collateral-token collateral-amount writer (as-contract tx-sender)))
+      )
+      
+      ;; Create option
+      (map-set options
+        { option-id: option-id }
+        {
+          creator: writer,
+          underlying-asset: underlying-asset,
+          strike-price: strike-price,
+          expiry-height: expiry-height,
+          option-type: option-type,
+          option-style: option-style,
+          collateral-amount: collateral-amount,
+          premium: premium,
+          contract-size: contract-size,
+          creation-height: current-height,
+          settlement-price: none,
+          is-settled: false,
+          settlement-height: none,
+          collateral-token: collateral-token,
+          holder: none,
+          is-exercised: false,
+          exercise-height: none,
+          is-liquidated: false,
+          liquidation-height: none,
+          iv-at-creation: iv,
+          premium-calculation-method: "black-scholes"
+        }
+      )
+      
+      ;; Increment option ID
+      (var-set next-option-id (+ option-id u1))
+      
+      (ok {
+        option-id: option-id,
+        collateral: collateral-amount,
+        premium: premium
+      })
+    )
+  )
+)
+
+;; Calculate required collateral based on option type and parameters
+(define-private (calculate-required-collateral
+  (option-type uint)
+  (underlying-asset (string-ascii 20))
+  (strike-price uint)
+  (contract-size uint))
+  
+  (let (
+    (asset (unwrap! (map-get? assets { asset-id: underlying-asset }) err-asset-not-found))
+    (asset-price (unwrap! (get current-price (map-get? price-data { asset-id: underlying-asset })) err-oracle-error))
+    (min-collateral-ratio (var-get min-collateral-ratio))
+  )
+    (if (is-eq option-type u0)
+      ;; Call option collateral
+      (if (get is-stx asset)
+        ;; STX-settled call option needs full collateral
+        contract-size
+        ;; Regular call option
+        (/ (* contract-size asset-price min-collateral-ratio) u10000)
+      )
+      ;; Put option collateral
+      (/ (* contract-size strike-price min-collateral-ratio) u10000)
+    )
+  )
+)
+
+;; Buy an option
+(define-public (buy-option (option-id uint))
+  (let (
+    (buyer tx-sender)
+    (option (unwrap! (map-get? options { option-id: option-id }) err-option-not-found))
+    (premium (get premium option))
+    (position-id (var-get next-position-id))
+  )
+    ;; Validation
+    (asserts! (not (var-get emergency-shutdown)) err-emergency-shutdown)
+    (asserts! (is-none (get holder option)) err-option-not-found) ;; Option must not be bought yet
+    (asserts! (< block-height (get expiry-height option)) err-option-expired)
+    
+    ;; Transfer premium to writer
+    (try! (stx-transfer? premium buyer (get creator option)))
+    
+    ;; Transfer protocol fee to treasury
+    (let (
+      (protocol-fee (/ (* premium (var-get protocol-fee-bp)) u10000))
+    )
+      (try! (stx-transfer? protocol-fee buyer (var-get treasury-address)))
+      
+      ;; Update option with new holder
+      (map-set options
+        { option-id: option-id }
+        (merge option { holder: (some buyer) })
+      )
+      
+      ;; Create position for buyer
+      (map-set positions
+        { position-id: position-id }
+        {
+          option-id: option-id,
+          holder: buyer,
+          purchase-height: block-height,
+          purchase-price: premium,
+          size: u1, ;; Each position represents one contract
+          state: u0, ;; Active
+          pnl: none,
+          exercise-price: none,
+          exercise-height: none,
+          liquidation-price: none,
+          liquidation-height: none
+        }
+      )
+      
+      ;; Update user positions list
+      (let (
+        (user-pos (default-to { position-ids: (list) } (map-get? user-positions { user: buyer })))
+      )
+        (map-set user-positions
+          { user: buyer }
+          { position-ids: (append (get position-ids user-pos) position-id) }
+        )
+      )
+      
+      ;; Increment position ID
+      (var-set next-position-id (+ position-id u1))
+      
+      (ok {
+        position-id: position-id,
+        premium: premium,
+        fee: protocol-fee
+      })
+    )
+  )
+)
+
+;; Exercise an option
+(define-public (exercise-option (position-id uint))
+  (let (
+    (holder tx-sender)
+    (position (unwrap! (map-get? positions { position-id: position-id }) err-position-not-found))
+    (option-id (get option-id position))
+    (option (unwrap! (map-get? options { option-id: option-id }) err-option-not-found))
+    (underlying-asset (get underlying-asset option))
+    (asset (unwrap! (map-get? assets { asset-id: underlying-asset }) err-asset-not-found))
+    (asset-price (unwrap! (get current-price (map-get? price-data { asset-id: underlying-asset })) err-oracle-error))
+    (creator (get creator option))
+  )
+    ;; Validation
+    (asserts! (not (var-get emergency-shutdown)) err-emergency-shutdown)
+    (asserts! (is-eq holder (get holder position)) err-not-authorized)
+    (asserts! (is-eq (get state position) u0) err-invalid-position-state)
+    (asserts! (< block-height (get expiry-height option)) err-option-expired)
+    (asserts! (not (get is-exercised option)) err-already-exercised)
+    
+    ;; For European options, can only exercise at expiration
+    (asserts! (or 
+               (is-eq (get option-style option) u0) ;; American style
+               (>= block-height (- (get expiry-height option) u6)) ;; Within 1 hour of expiry
+              ) 
+              err-option-not-exercisable)
+    
+    ;; Check if the option is in-the-money
+    (let (
+      (is-call (is-eq (get option-type option) u0))
+      (strike-price (get strike-price option))
+      (intrinsic-value (if is-call
+                          (if (> asset-price strike-price) (- asset-price strike-price) u0)
+                          (if (< asset-price strike-price) (- strike-price asset-price) u0)))
+      (contract-size (get contract-size option))
+      (collateral-amount (get collateral-amount option))
+      (collateral-token (get collateral-token option))
+      (settlement-amount (calculate-settlement-amount option asset-price))
+    )
+      ;; Ensure option has value
+      (asserts! (> intrinsic-value u0) err-option-not-exercisable)
+      
+      ;; Transfer settlement amount to holder
+      (if (is-eq collateral-token "stx")
+        ;; STX settlement
+        (as-contract (try! (stx-transfer? settlement-amount (as-contract tx-sender) holder)))
+        ;; Other token settlement
+        (as-contract (try! (transfer-token collateral-token settlement-amount (as-contract tx-sender) holder)))
+      )
+      
+      ;; Return remaining collateral to creator if any
+      (let (
+        (remaining-collateral (- collateral-amount settlement-amount))
+      )
+        (if (> remaining-collateral u0)
+          (if (is-eq collateral-token "stx")
+            ;; STX return
+            (as-contract (try! (stx-transfer? remaining-collateral (as-contract tx-sender) creator)))
+            ;; Other token return
+            (as-contract (try! (transfer-token collateral-token remaining-collateral (as-contract tx-sender) creator)))
+          )
+          true
+        )
+      )
+      
+      ;; Update option
+      (map-set options
+        { option-id: option-id }
+        (merge option {
+          is-exercised: true,
+          exercise-height: (some block-height),
+          settlement-price: (some asset-price),
+          is-settled: true,
+          settlement-height: (some block-height)
+        })
+      )
+      
+      ;; Update position
+      (map-set positions
+        { position-id: position-id }
+        (merge position {
+          state: u1, ;; Exercised
+          pnl: (some (- (to-int settlement-amount) (to-int (get purchase-price position)))),
+          exercise-price: (some asset-price),
+          exercise-height: (some block-height)
+        })
+      )
+      
+      (ok {
+        position-id: position-id,
+        settlement-amount: settlement-amount,
+        intrinsic-value: intrinsic-value
+      })
+    )
+  )
+)
